@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <title>HPID ↔ CHID Finder Offline (KML → CSV/XLSX)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- butuh sheetjs buat export xlsx -->
+  <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+  <style>
+    body { font-family: sans-serif; background:#f3f4f6; margin:16px; }
+    h1 { margin-bottom:4px; }
+    .box { background:#fff; padding:12px 16px; border-radius:8px; margin-bottom:14px; box-shadow:0 1px 4px rgba(0,0,0,0.05); }
+    label { display:block; margin-bottom:6px; font-weight:600; }
+    input[type="file"] { margin-bottom:6px; }
+    button { background:#2563eb; color:#fff; border:none; padding:7px 14px; border-radius:4px; cursor:pointer; font-weight:600; }
+    button:disabled { background:#9ca3af; cursor:not-allowed; }
+    table { border-collapse:collapse; width:100%; font-size:12px; margin-top:10px; }
+    th, td { border:1px solid #ddd; padding:4px 6px; text-align:left; }
+    th { background:#e5e7eb; }
+    .small { font-size:12px; color:#555; }
+    #resultTableWrap { max-height:360px; overflow:auto; }
+  </style>
+</head>
+<body>
+  <h1>HPID ↔ CHID Finder Offline (KML)</h1>
+  <p class="small">Upload 2 KML: HP dan CHID. Hasil bisa diunduh jadi CSV atau Excel.</p>
+
+  <div class="box">
+    <label>1. KML HP</label>
+    <input id="hpFile" type="file" accept=".kml" />
+  </div>
+
+  <div class="box">
+    <label>2. KML CHID</label>
+    <input id="chidFile" type="file" accept=".kml" />
+  </div>
+
+  <div class="box">
+    <button id="btnProcess" disabled>Proses</button>
+    <button id="btnDownloadCsv" disabled>Download hasil (.csv)</button>
+    <button id="btnDownloadXlsx" disabled>Download hasil (.xlsx)</button>
+    <p id="status" class="small" style="margin-top:8px;"></p>
+  </div>
+
+  <div class="box" id="resultBox" style="display:none;">
+    <h2 style="margin-top:0;">Hasil</h2>
+    <div id="resultTableWrap">
+      <table id="resultTable">
+        <thead></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p class="small">Ditampilin max 200 baris.</p>
+  </div>
+
+  <script>
+    let hpPoints = null;
+    let chidPoints = null;
+    let finalRows = null;
+
+    const hpInput = document.getElementById('hpFile');
+    const chidInput = document.getElementById('chidFile');
+    const statusEl = document.getElementById('status');
+    const btnProcess = document.getElementById('btnProcess');
+    const btnDownloadCsv = document.getElementById('btnDownloadCsv');
+    const btnDownloadXlsx = document.getElementById('btnDownloadXlsx');
+    const resultBox = document.getElementById('resultBox');
+
+    hpInput.addEventListener('change', () => readKML(hpInput.files[0], pts => {
+      hpPoints = pts;
+      statusEl.textContent = `HP kebaca ${pts.length} titik.`;
+      checkReady();
+    }));
+
+    chidInput.addEventListener('change', () => readKML(chidInput.files[0], pts => {
+      chidPoints = pts;
+      statusEl.textContent = `CHID kebaca ${pts.length} titik.`;
+      checkReady();
+    }));
+
+    function checkReady() {
+      if (hpPoints && chidPoints) {
+        btnProcess.disabled = false;
+        statusEl.textContent = `Siap diproses. HP: ${hpPoints.length} | CHID: ${chidPoints.length}`;
+      }
+    }
+
+    function readKML(file, cb) {
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const text = e.target.result;
+        const parser = new DOMParser();
+        const xml = parser.parseFromString(text, "application/xml");
+        const placemarks = xml.getElementsByTagName("Placemark");
+        const points = [];
+        for (let i = 0; i < placemarks.length; i++) {
+          const pm = placemarks[i];
+          const nameEl = pm.getElementsByTagName("name")[0];
+          const name = nameEl ? nameEl.textContent.trim() : `PM_${i+1}`;
+          const coordEl = pm.getElementsByTagName("coordinates")[0];
+          if (!coordEl) continue;
+          const coordText = coordEl.textContent.trim();
+          const first = coordText.split(/\s+/)[0];
+          const parts = first.split(",");
+          const lon = parseFloat(parts[0]);
+          const lat = parseFloat(parts[1]);
+          if (isNaN(lat) || isNaN(lon)) continue;
+          points.push({ id: name, lat, lon });
+        }
+        cb(points);
+      };
+      reader.readAsText(file);
+    }
+
+    function toRad(deg){ return deg * Math.PI / 180; }
+    function distanceKm(lat1, lon1, lat2, lon2) {
+      const R = 6371;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+                Math.sin(dLon/2) * Math.sin(dLon/2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+      return R * c;
+    }
+
+    btnProcess.addEventListener('click', () => {
+      if (!hpPoints || !chidPoints) return;
+      const output = [];
+      hpPoints.forEach(hp => {
+        let best = null;
+        chidPoints.forEach(ch => {
+          const d = distanceKm(hp.lat, hp.lon, ch.lat, ch.lon);
+          if (!best || d < best.dist) {
+            best = { ...ch, dist: d };
+          }
+        });
+        if (best) {
+          output.push({
+            HP: hp.id,
+            HP_LAT: hp.lat.toFixed(7),
+            HP_LONG: hp.lon.toFixed(7),
+            Nearest_CHID: best.id,
+            CHID_LAT: best.lat.toFixed(7),
+            CHID_LONG: best.lon.toFixed(7),
+            Distance_km: best.dist.toFixed(4)
+          });
+        }
+      });
+      finalRows = output;
+      statusEl.textContent = `Berhasil diproses: ${output.length} baris.`;
+      btnDownloadCsv.disabled = false;
+      btnDownloadXlsx.disabled = false;
+      renderResultTable(output);
+    });
+
+    function renderResultTable(rows) {
+      const table = document.getElementById('resultTable');
+      const thead = table.querySelector('thead');
+      const tbody = table.querySelector('tbody');
+      thead.innerHTML = '';
+      tbody.innerHTML = '';
+
+      if (!rows || rows.length === 0) {
+        resultBox.style.display = 'none';
+        return;
+      }
+      resultBox.style.display = 'block';
+
+      const headers = Object.keys(rows[0]);
+      const trHead = document.createElement('tr');
+      headers.forEach(h => {
+        const th = document.createElement('th');
+        th.textContent = h;
+        trHead.appendChild(th);
+      });
+      thead.appendChild(trHead);
+
+      const maxRows = Math.min(rows.length, 200);
+      for (let i = 0; i < maxRows; i++) {
+        const tr = document.createElement('tr');
+        headers.forEach(h => {
+          const td = document.createElement('td');
+          td.textContent = rows[i][h];
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      }
+    }
+
+    btnDownloadCsv.addEventListener('click', () => {
+      if (!finalRows || finalRows.length === 0) return;
+      const headers = Object.keys(finalRows[0]);
+      const lines = [];
+      lines.push(headers.join(','));
+      finalRows.forEach(r => {
+        const row = headers.map(h => r[h]);
+        lines.push(row.join(','));
+      });
+      const csvContent = lines.join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'HPID_with_CHID_assignments_from_KML.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    btnDownloadXlsx.addEventListener('click', () => {
+      if (!finalRows || finalRows.length === 0) return;
+      const headers = Object.keys(finalRows[0]);
+      const data = [headers];
+      finalRows.forEach(r => {
+        data.push(headers.map(h => r[h]));
+      });
+      const ws = XLSX.utils.aoa_to_sheet(data);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Result");
+      XLSX.writeFile(wb, "HPID_with_CHID_assignments_from_KML.xlsx");
+    });
+  </script>
+</body>
+</html>
